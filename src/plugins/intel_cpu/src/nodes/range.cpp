@@ -135,14 +135,16 @@ size_t Range::getWorkAmount(data_t* startPtr, data_t* stopPtr, data_t* stepPtr) 
     *startPtr = getSrcDataAtPortAs<const data_t>(RANGE_START)[0];
     *stopPtr = getSrcDataAtPortAs<const data_t>(RANGE_LIMIT)[0];
     *stepPtr = getSrcDataAtPortAs<const data_t>(RANGE_DELTA)[0];
-    const data_t span = *stopPtr - *startPtr;
-    const data_t step = *stepPtr;
-    if (std::is_same_v<data_t, int>) {
-        auto iSpan = static_cast<int>(span);
-        auto iStep = static_cast<int>(step);
-        return static_cast<size_t>(div_up(iSpan < 0 ? -iSpan : iSpan, iStep < 0 ? -iStep : iStep));
+    if constexpr (std::is_integral_v<data_t>) {
+        // Widen before subtraction, negation and rounding up the quotient.
+        const int64_t span = static_cast<int64_t>(*stopPtr) - *startPtr;
+        const int64_t step = *stepPtr;
+        return static_cast<size_t>(div_up(span < 0 ? -span : span, step < 0 ? -step : step));
+    } else {
+        const data_t span = *stopPtr - *startPtr;
+        const data_t step = *stepPtr;
+        return static_cast<size_t>(std::ceil(std::fabs(span) / std::fabs(step)));
     }
-    return static_cast<size_t>(std::ceil(std::fabs(span) / std::fabs(step)));
 }
 
 template <typename data_t>
@@ -159,9 +161,14 @@ Range::StatusCode Range::rangeKernel() {
         size_t iwork = 0;
         size_t end = 0;
         splitter(work_amount_dst, nthr, ithr, iwork, end);
-        data_t dst_value = start + static_cast<data_t>(iwork) * delta;
+        if (iwork == end) {
+            return;
+        }
+        // Integer offsets and the increment after the last element may exceed i32.
+        using Accumulator = std::conditional_t<std::is_integral_v<data_t>, int64_t, data_t>;
+        Accumulator dst_value = static_cast<Accumulator>(start) + static_cast<Accumulator>(iwork) * delta;
         for (; iwork < end; ++iwork, dst_value += delta) {
-            dst_data[iwork] = dst_value;
+            dst_data[iwork] = static_cast<data_t>(dst_value);
         }
     });
     return OK;
